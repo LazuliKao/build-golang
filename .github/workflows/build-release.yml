@@ -53,7 +53,7 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path "artifacts" -Filter "go*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $zip = Get-ChildItem -Path "artifacts" -Filter "go*.zip" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $zip) { throw "go*.zip not found in artifacts" }
           $base = $zip.BaseName
           $ver = $base -replace '\\.(windows|linux)-.+$',''
