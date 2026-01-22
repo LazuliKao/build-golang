@@ -352,6 +352,14 @@ function Copy-GoOutput {
             Remove-Item $platformBinDir -Force
             Write-Success "Linux binaries moved to bin/ and platform subdirectory removed"
         }
+
+        # Remove Windows toolchain binaries from linux package
+        $windowsToolDir = Join-Path $platformOutputDir "pkg/tool/windows_amd64"
+        if (Test-Path $windowsToolDir) {
+            Write-Host "Removing Windows toolchain from linux package: $windowsToolDir"
+            Remove-Item $windowsToolDir -Recurse -Force
+            Write-Success "Removed pkg/tool/windows_amd64 from linux package"
+        }
     }
     
     return $platformOutputDir
