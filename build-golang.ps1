@@ -307,13 +307,23 @@ function Copy-GoOutput {
     
     $platformOutputDir = "$DestinationDirectory-$OS-$Arch"
     
+    # Use robocopy to copy/sync, excluding .git directory
+    Write-Host "Using robocopy to copy (excluding .git)..."
+    
     if (Test-Path $platformOutputDir) {
-        Write-Host "Removing existing output directory..."
-        Remove-Item $platformOutputDir -Recurse -Force
+        # Sync mode - mirror but exclude .git
+        $robocopyResult = robocopy $SourceDirectory $platformOutputDir /MIR /XD ".git" /R:1 /W:1 /NFL /NDL /NP
+    } else {
+        # Fresh copy - exclude .git
+        $robocopyResult = robocopy $SourceDirectory $platformOutputDir /E /XD ".git" /R:1 /W:1 /NFL /NDL /NP
     }
     
-    Copy-Item $SourceDirectory $platformOutputDir -Recurse -Force
-    Write-Success "Go ($OS/$Arch) copied to $platformOutputDir"
+    # Robocopy exit codes: 0-7 are success (0=no change, 1=files copied, 2=extra files, etc.)
+    if ($LASTEXITCODE -le 7) {
+        Write-Success "Go ($OS/$Arch) copied to $platformOutputDir (excluded .git)"
+    } else {
+        throw "Robocopy failed with exit code $LASTEXITCODE"
+    }
     
     # Post-process for Linux builds
     if ($OS -eq "linux") {
