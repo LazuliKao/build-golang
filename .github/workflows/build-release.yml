@@ -29,15 +29,16 @@ jobs:
       - name: Derive Go version from artifact
         id: version
         run: |
-          $zip = Get-ChildItem -Path . -Filter "go*.windows-amd64.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $zip) { throw "go*.windows-amd64.zip not found" }
-          $ver = $zip.BaseName -replace '\\.windows-amd64$',''
-          if (-not $ver) { throw "Failed to parse Go version from artifact name" }
+          $zip = Get-ChildItem -Path . -Filter "go*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $zip) { throw "go*.zip not found" }
+          $base = $zip.BaseName
+          $ver = $base -replace '\\.(windows|linux)-.+$',''
+          if (-not $ver) { throw "Failed to parse Go version from artifact name: $base" }
           Write-Host "Detected Go version: $ver"
           "go_version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.go_version }}
           name: ${{ steps.version.outputs.go_version }}
@@ -46,3 +47,5 @@ jobs:
           prerelease: false
           files: |
             go*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
