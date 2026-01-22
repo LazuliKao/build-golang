@@ -1,0 +1,48 @@
+name: build-go-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      go_version:
+        description: 'Go version to build (e.g., go1.22.0); leave blank for latest release'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Go
+        run: |
+          ./build-golang.ps1 -GoVersion '${{ inputs.go_version }}'
+
+      - name: Derive Go version from artifact
+        id: version
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "go*.windows-amd64.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $zip) { throw "go*.windows-amd64.zip not found" }
+          $ver = $zip.BaseName -replace '\\.windows-amd64$',''
+          if (-not $ver) { throw "Failed to parse Go version from artifact name" }
+          Write-Host "Detected Go version: $ver"
+          "go_version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.go_version }}
+          name: ${{ steps.version.outputs.go_version }}
+          body: ''
+          draft: false
+          prerelease: false
+          files: |
+            go*.zip
