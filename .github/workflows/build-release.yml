@@ -64,7 +64,7 @@ jobs:
           $zip = Get-ChildItem -Path "artifacts" -Filter "go*.zip" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $zip) { throw "go*.zip not found in artifacts" }
           $base = $zip.BaseName
-          $ver = $base -replace '\\.(windows|linux)-[^.]+$',''
+          $ver = $base -replace '\.(windows|linux)-[^.]+$',''
           if ($ver -eq $base) { $ver = $base -replace '-(windows|linux)-[^.]+$','' }
           $ver = $ver.TrimEnd('.')
           if (-not $ver -or $ver -eq $base) { throw "Failed to parse Go version from artifact name: $base" }
