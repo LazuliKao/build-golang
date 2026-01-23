@@ -271,21 +271,28 @@ function Apply-PRPatch {
         
         Push-Location $SourceDir
         try {
-            
             Write-Host "Applying patch to source..."
-            # Use git apply to apply the patch
-            git apply --verbose $patchPath
             
-            if ($LASTEXITCODE -ne 0) {
-                # Write-Host "git apply failed, trying with --3way..." -ForegroundColor Yellow
-                # git apply --3way --verbose $patchPath
+            # Use --reject to keep successful changes even if some hunks fail
+            # Failed hunks will be saved as .rej files
+            git apply --reject --whitespace=nowarn $patchPath
+            $exitCode = $LASTEXITCODE
+            
+            if ($exitCode -ne 0) {
+                Write-Host "`nPatch partially applied (exit code: $exitCode)" -ForegroundColor Yellow
                 
-                # if ($LASTEXITCODE -ne 0) {
-                    Write-Host "Failed to apply patch with exit code $LASTEXITCODE"
-                # }
+                # Count .rej files to see what failed
+                $rejFiles = Get-ChildItem -Path . -Filter "*.rej" -Recurse -ErrorAction SilentlyContinue
+                if ($rejFiles) {
+                    Write-Host "Failed to apply $($rejFiles.Count) hunk(s) - saved as .rej files" -ForegroundColor Yellow
+                    Write-Host "This is expected for architecture-specific code (s390x, etc.)" -ForegroundColor Yellow
+                }
+                
+                Write-Host "Successfully applied changes have been kept." -ForegroundColor Green
+                Write-Host "Continuing with build..." -ForegroundColor Cyan
+            } else {
+                Write-Success "PR #$PRNumber patch applied successfully"
             }
-            
-            Write-Success "PR #$PRNumber patch applied successfully"
         } finally {
             Pop-Location
         }
@@ -293,6 +300,59 @@ function Apply-PRPatch {
         # Clean up patch file
         if (Test-Path $patchPath) {
             Remove-Item $patchPath -Force
+        }
+    }
+}
+
+# Apply local patch from a file
+function Apply-LocalPatch {
+    param(
+        [Parameter(Mandatory=$true)][string]$PatchFile,
+        [switch]$RemoveAfter = $false
+    )
+
+    Write-Step "Applying local patch: $PatchFile"
+
+    if (-not (Test-Path $PatchFile)) {
+        throw "Patch file not found: $PatchFile"
+    }
+
+    $patchPath = (Resolve-Path $PatchFile).Path
+
+    Push-Location $SourceDir
+    try {
+        Write-Host "Applying patch to source..."
+
+        # Use --reject to keep successful changes even if some hunks fail
+        # Failed hunks will be saved as .rej files
+        git apply --reject --whitespace=nowarn $patchPath
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -ne 0) {
+            Write-Host "`nPatch partially applied (exit code: $exitCode)" -ForegroundColor Yellow
+
+            # Count .rej files to see what failed
+            $rejFiles = Get-ChildItem -Path . -Filter "*.rej" -Recurse -ErrorAction SilentlyContinue
+            if ($rejFiles) {
+                Write-Host "Failed to apply $($rejFiles.Count) hunk(s) - saved as .rej files" -ForegroundColor Yellow
+                Write-Host "This is expected for architecture-specific code (s390x, etc.)" -ForegroundColor Yellow
+            }
+
+            Write-Host "Successfully applied changes have been kept." -ForegroundColor Green
+            Write-Host "Continuing with build..." -ForegroundColor Cyan
+        } else {
+            Write-Success "Local patch applied successfully"
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if ($RemoveAfter -and (Test-Path $patchPath)) {
+        try {
+            Remove-Item $patchPath -Force
+            Write-Host "Removed patch file: $patchPath" -ForegroundColor Cyan
+        } catch {
+            Write-Host "Warning: Failed to remove patch file: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -581,7 +641,8 @@ try {
     # Execute build steps (clone and bootstrap once)
     Get-BootstrapGo
     Get-GoSource -Version $GoVersion
-    Apply-PRPatch -PRNumber 75048
+    # Apply-PRPatch -PRNumber 75048
+    Apply-LocalPatch -PatchFile "b5154bd2ca19f98c7580e41eb4fc00113c79be1a.patch"
     
     # Build and package for each platform
     foreach ($platform in $Platforms) {

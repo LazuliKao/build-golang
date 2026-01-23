@@ -1,0 +1,176 @@
+diff --git a/src/runtime/os3_solaris.go b/src/runtime/os3_solaris.go
+index 3197c66537..603639260e 100644
+--- a/src/runtime/os3_solaris.go
++++ b/src/runtime/os3_solaris.go
+@@ -600,6 +600,12 @@ func osyield() {
+ var executablePath string
+ 
+ func sysargs(argc int32, argv **byte) {
++	// Check for nil argv to handle c-shared/c-archive libraries
++	// where DT_INIT_ARRAY doesn't pass arguments according to ELF specification
++	if argv == nil || argc < 0 || (islibrary || isarchive) {
++		return
++	}
++	
+ 	n := argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+diff --git a/src/runtime/os_darwin.go b/src/runtime/os_darwin.go
+index 0c7144e9d0..02de43dfb4 100644
+--- a/src/runtime/os_darwin.go
++++ b/src/runtime/os_darwin.go
+@@ -458,6 +458,12 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
+ var executablePath string
+ 
+ func sysargs(argc int32, argv **byte) {
++	// Check for nil argv to handle c-shared/c-archive libraries
++	// where DT_INIT_ARRAY doesn't pass arguments according to ELF specification
++	if argv == nil || argc < 0 || (islibrary || isarchive) {
++		return
++	}
++	
+ 	// skip over argv, envv and the first string will be the path
+ 	n := argc + 1
+ 	for argv_index(argv, n) != nil {
+diff --git a/src/runtime/os_dragonfly.go b/src/runtime/os_dragonfly.go
+index fbbee64fd3..4b9dbf4c9a 100644
+--- a/src/runtime/os_dragonfly.go
++++ b/src/runtime/os_dragonfly.go
+@@ -295,6 +295,12 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
+ }
+ 
+ func sysargs(argc int32, argv **byte) {
++	// Check for nil argv to handle c-shared/c-archive libraries
++	// where DT_INIT_ARRAY doesn't pass arguments according to ELF specification
++	if argv == nil || argc < 0 || (islibrary || isarchive) {
++		return
++	}
++	
+ 	n := argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+diff --git a/src/runtime/os_freebsd.go b/src/runtime/os_freebsd.go
+index ab859cfb47..8ad2b4bd90 100644
+--- a/src/runtime/os_freebsd.go
++++ b/src/runtime/os_freebsd.go
+@@ -403,6 +403,12 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
+ }
+ 
+ func sysargs(argc int32, argv **byte) {
++	// Check for nil argv to handle c-shared/c-archive libraries
++	// where DT_INIT_ARRAY doesn't pass arguments according to ELF specification
++	if argv == nil || argc < 0 || (islibrary || isarchive) {
++		return
++	}
++	
+ 	n := argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+diff --git a/src/runtime/os_linux.go b/src/runtime/os_linux.go
+index fd560ddf5a..826f155060 100644
+--- a/src/runtime/os_linux.go
++++ b/src/runtime/os_linux.go
+@@ -239,21 +239,26 @@ var auxvreadbuf [128]uintptr
+ 
+ func sysargs(argc int32, argv **byte) {
+ 	n := argc + 1
++	// On non-glibc systems, argc/argv are not passed to shared library constructors.
++	// The ELF specification for DT_INIT_ARRAY does not require passing arguments.
++	// Skip the argv-based auxv parsing when argv is invalid.
++	if argv != nil && argc >= 0 && !(islibrary || isarchive) {
++
++		// skip over argv, envp to get to auxv
++		for argv_index(argv, n) != nil {
++			n++
++		}
+ 
+-	// skip over argv, envp to get to auxv
+-	for argv_index(argv, n) != nil {
++		// skip NULL separator
+ 		n++
+-	}
+-
+-	// skip NULL separator
+-	n++
+ 
+-	// now argv+n is auxv
+-	auxvp := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*goarch.PtrSize))
++		// now argv+n is auxv
++		auxvp := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*goarch.PtrSize))
+ 
+-	if pairs := sysauxv(auxvp[:]); pairs != 0 {
+-		auxv = auxvp[: pairs*2 : pairs*2]
+-		return
++		if pairs := sysauxv(auxvp[:]); pairs != 0 {
++			auxv = auxvp[: pairs*2 : pairs*2]
++			return
++		}
+ 	}
+ 	// In some situations we don't get a loader-provided
+ 	// auxv, such as when loaded as a library on Android.
+diff --git a/src/runtime/os_netbsd.go b/src/runtime/os_netbsd.go
+index 10b14a8718..76aca089c7 100644
+--- a/src/runtime/os_netbsd.go
++++ b/src/runtime/os_netbsd.go
+@@ -399,6 +399,12 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
+ }
+ 
+ func sysargs(argc int32, argv **byte) {
++	// Check for nil argv to handle c-shared/c-archive libraries
++	// where DT_INIT_ARRAY doesn't pass arguments according to ELF specification
++	if argv == nil || argc < 0 || (islibrary || isarchive) {
++		return
++	}
++	
+ 	n := argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+diff --git a/src/runtime/runtime1.go b/src/runtime/runtime1.go
+index 15b546783b..9f638f7645 100644
+--- a/src/runtime/runtime1.go
++++ b/src/runtime/runtime1.go
+@@ -57,10 +57,14 @@ var (
+ 	argv **byte
+ )
+ 
++var emptyByte byte = 0
+ // nosplit for use in linux startup sysargs.
+ //
+ //go:nosplit
+ func argv_index(argv **byte, i int32) *byte {
++	if islibrary || isarchive {
++		return &emptyByte
++	}
+ 	return *(**byte)(add(unsafe.Pointer(argv), uintptr(i)*goarch.PtrSize))
+ }
+ 
+@@ -74,6 +78,13 @@ func goargs() {
+ 	if GOOS == "windows" {
+ 		return
+ 	}
++	// When running as c-archive or c-shared on non-glibc systems,
++	// argv may be nil since DT_INIT_ARRAY doesn't pass arguments per ELF spec.
++	if argv == nil || (islibrary || isarchive) {
++		// Initialize argslice to empty slice for consistency
++		argslice = make([]string, 0)
++		return
++	}
+ 	argslice = make([]string, argc)
+ 	for i := int32(0); i < argc; i++ {
+ 		argslice[i] = gostringnocopy(argv_index(argv, i))
+@@ -84,6 +95,15 @@ func goenvs_unix() {
+ 	// TODO(austin): ppc64 in dynamic linking mode doesn't
+ 	// guarantee env[] will immediately follow argv. Might cause
+ 	// problems.
++	
++	// When running as c-archive or c-shared on non-glibc systems,
++	// argv may be nil since DT_INIT_ARRAY doesn't pass arguments per ELF spec.
++	if argv == nil || (islibrary || isarchive) {
++		// Initialize envs to empty slice to avoid "getenv before env init"
++		envs = make([]string, 0)
++		return
++	}
++	
+ 	n := int32(0)
+ 	for argv_index(argv, argc+1+n) != nil {
+ 		n++
