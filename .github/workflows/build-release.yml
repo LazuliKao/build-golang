@@ -35,7 +35,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: go-${{ matrix.platform }}
-          path: go*.${{ matrix.platform }}-*.zip
+          path: |
+            go*.${{ matrix.platform }}-*.zip
+            go*.${{ matrix.platform }}-*.tar.gz
           if-no-files-found: error
 
   release:
@@ -48,6 +50,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          ls artifacts
+          ls artifacts -Recurse -Filter "go*.zip"
 
       - name: Derive Go version from artifact
         id: version
@@ -56,8 +64,10 @@ jobs:
           $zip = Get-ChildItem -Path "artifacts" -Filter "go*.zip" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $zip) { throw "go*.zip not found in artifacts" }
           $base = $zip.BaseName
-          $ver = $base -replace '\\.(windows|linux)-.+$',''
-          if (-not $ver) { throw "Failed to parse Go version from artifact name: $base" }
+          $ver = $base -replace '\\.(windows|linux)-[^.]+$',''
+          if ($ver -eq $base) { $ver = $base -replace '-(windows|linux)-[^.]+$','' }
+          $ver = $ver.TrimEnd('.')
+          if (-not $ver -or $ver -eq $base) { throw "Failed to parse Go version from artifact name: $base" }
           Write-Host "Detected Go version: $ver"
           "go_version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -70,6 +80,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            artifacts/go*.zip
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

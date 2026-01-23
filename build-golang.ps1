@@ -411,29 +411,30 @@ function Package-Go {
     # Extract version number (remove "go" prefix)
     $versionNumber = $Version -replace "^go", ""
     
-    # Create zip filename in format: go{version}.{os}-{arch}.zip
     $zipFileName = "go$versionNumber.$OS-$Architecture.zip"
+    $tarFileName = "go$versionNumber.$OS-$Architecture.tar.gz"
     $zipPath = Join-Path $PSScriptRoot $zipFileName
+    $tarPath = Join-Path $PSScriptRoot $tarFileName
     
     $platformOutputDir = "$OutputDirectory-$OS-$Architecture"
     
-    # Remove existing zip if it exists
-    if (Test-Path $zipPath) {
-        Write-Host "Removing existing zip file..."
-        Remove-Item $zipPath -Force
+    if ($OS -eq "linux") {
+        if (Test-Path $tarPath) { Remove-Item $tarPath -Force }
+        Write-Host "Creating tar.gz file: $tarFileName"
+        tar -czf $tarPath -C $platformOutputDir .
+        if (-not (Test-Path $tarPath)) { throw "Failed to create tar.gz file: $tarPath" }
+        $tarSize = (Get-Item $tarPath).Length / 1MB
+        Write-Success "Go packaged successfully: $tarFileName (Size: $([math]::Round($tarSize, 2)) MB)"
+        Write-Host "Location: $tarPath"
+    } else {
+        if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+        Write-Host "Creating zip file: $zipFileName"
+        Compress-Archive -Path (Join-Path $platformOutputDir "*") -DestinationPath $zipPath -Force
+        if (-not (Test-Path $zipPath)) { throw "Failed to create zip file: $zipPath" }
+        $zipSize = (Get-Item $zipPath).Length / 1MB
+        Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSize, 2)) MB)"
+        Write-Host "Location: $zipPath"
     }
-    
-    # Compress the output directory
-    Write-Host "Creating zip file: $zipFileName"
-    Compress-Archive -Path (Join-Path $platformOutputDir "*") -DestinationPath $zipPath -Force
-    
-    if (-not (Test-Path $zipPath)) {
-        throw "Failed to create zip file: $zipPath"
-    }
-    
-    $zipSize = (Get-Item $zipPath).Length / 1MB
-    Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSize, 2)) MB)"
-    Write-Host "Location: $zipPath"
 }
 
 # Main execution
