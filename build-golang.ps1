@@ -109,6 +109,70 @@ function Stop-HangingProcesses {
     Write-Success "Process cleanup completed ($killedCount/$($processesToKill.Count) terminated)"
 }
 
+# Remove directory with retry mechanism for locked files
+function Remove-DirectoryWithRetry {
+    param(
+        [string]$Path,
+        [int]$MaxRetries = 5,
+        [int]$RetryDelaySeconds = 2
+    )
+    
+    if (-not (Test-Path $Path)) {
+        return $true
+    }
+    
+    $retryCount = 0
+    while ($retryCount -lt $MaxRetries) {
+        try {
+            # Method 1: Try direct removal first
+            Remove-Item $Path -Recurse -Force -ErrorAction Stop
+            return $true
+        } catch {
+            $retryCount++
+            Write-Host "Removal failed (attempt $retryCount/$MaxRetries): $($_.Exception.Message)" -ForegroundColor Yellow
+            
+            if ($retryCount -lt $MaxRetries) {
+                # Method 2: Kill processes locking files
+                try {
+                    $processes = Get-Process | Where-Object { 
+                        $_.Path -and $_.Path -like "$Path*" 
+                    }
+                    foreach ($proc in $processes) {
+                        Write-Host "Terminating: $($proc.Name) (PID: $($proc.Id))"
+                        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    }
+                } catch { }
+                
+                Start-Sleep -Seconds $RetryDelaySeconds
+                
+                # Method 3: Use robocopy to purge (more aggressive)
+                if ($retryCount -ge 2) {
+                    Write-Host "Trying robocopy purge method..." -ForegroundColor Yellow
+                    $emptyDir = Join-Path $env:TEMP "empty_$(Get-Random)"
+                    New-Item -ItemType Directory -Path $emptyDir -Force | Out-Null
+                    
+                    # Use robocopy to mirror empty directory (effectively deletes everything)
+                    robocopy $emptyDir $Path /MIR /R:0 /W:0 /NFL /NDL /NP /NJS /NJH | Out-Null
+                    
+                    Remove-Item $emptyDir -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                    
+                    # Try to remove the now-empty directory
+                    try {
+                        Remove-Item $Path -Force -ErrorAction Stop
+                        return $true
+                    } catch {
+                        Write-Host "Robocopy purge partially succeeded, retrying..." -ForegroundColor Yellow
+                    }
+                }
+            } else {
+                throw "Failed to remove directory after $MaxRetries attempts: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $false
+}
+
 # Check if Git is installed
 function Test-Git {
     try {
@@ -307,16 +371,13 @@ function Copy-GoOutput {
     
     $platformOutputDir = "$DestinationDirectory-$OS-$Arch"
     
-    # Remove existing output directory to avoid file accumulation from multiple builds
+    # Use robocopy with /MIR to mirror source to destination
+    # This automatically handles cleanup of old files without needing to delete the directory
+    Write-Host "Using robocopy to mirror source (excluding .git)..."
     if (Test-Path $platformOutputDir) {
-        Write-Host "Removing existing output directory to avoid version conflicts..."
-        Remove-Item $platformOutputDir -Recurse -Force
-        Write-Success "Old output directory removed"
+        Write-Host "Destination exists, will mirror and purge old files..."
     }
-    
-    # Use robocopy to copy, excluding .git directory
-    Write-Host "Using robocopy to copy (excluding .git)..."
-    $robocopyResult = robocopy $SourceDirectory $platformOutputDir /E /XD ".git" /R:1 /W:1 /NFL /NDL /NP
+    $robocopyResult = robocopy $SourceDirectory $platformOutputDir /MIR /XD ".git" /R:1 /W:1 /NFL /NDL /NP
     
     # Robocopy exit codes: 0-7 are success (0=no change, 1=files copied, 2=extra files, etc.)
     if ($LASTEXITCODE -le 7) {
@@ -421,19 +482,66 @@ function Package-Go {
     if ($OS -eq "linux") {
         if (Test-Path $tarPath) { Remove-Item $tarPath -Force }
         Write-Host "Creating tar.gz file: $tarFileName"
-        tar -czf $tarPath -C $platformOutputDir .
-        if (-not (Test-Path $tarPath)) { throw "Failed to create tar.gz file: $tarPath" }
-        $tarSize = (Get-Item $tarPath).Length / 1MB
-        Write-Success "Go packaged successfully: $tarFileName (Size: $([math]::Round($tarSize, 2)) MB)"
-        Write-Host "Location: $tarPath"
+        
+        # Create temporary 'go' directory structure for tar
+        $tempDir = Join-Path $env:TEMP "go-package-$(Get-Random)"
+        $tempGoDir = Join-Path $tempDir "go"
+        
+        try {
+            New-Item -ItemType Directory -Path $tempGoDir -Force | Out-Null
+            
+            # Copy contents to temp 'go' directory
+            robocopy $platformOutputDir $tempGoDir /E /R:1 /W:1 /NFL /NDL /NP | Out-Null
+            
+            # Create tar.gz from temp directory
+            # Use relative path for tar output to avoid Windows path issues
+            $tarFileName = Split-Path $tarPath -Leaf
+            Push-Location $tempDir
+            try {
+                tar -czf $tarFileName go
+                # Move tar to final location
+                Move-Item $tarFileName $tarPath -Force
+                if (-not (Test-Path $tarPath)) { throw "Failed to create tar.gz file: $tarPath" }
+            } finally {
+                Pop-Location
+            }
+            
+            $tarSize = (Get-Item $tarPath).Length / 1MB
+            Write-Success "Go packaged successfully: $tarFileName (Size: $([math]::Round($tarSize, 2)) MB)"
+            Write-Host "Location: $tarPath"
+        } finally {
+            # Clean up temp directory
+            if (Test-Path $tempDir) {
+                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     } else {
         if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
         Write-Host "Creating zip file: $zipFileName"
-        Compress-Archive -Path (Join-Path $platformOutputDir "*") -DestinationPath $zipPath -Force
-        if (-not (Test-Path $zipPath)) { throw "Failed to create zip file: $zipPath" }
-        $zipSize = (Get-Item $zipPath).Length / 1MB
-        Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSize, 2)) MB)"
-        Write-Host "Location: $zipPath"
+        
+        # Create temporary 'go' directory structure for zip
+        $tempDir = Join-Path $env:TEMP "go-package-$(Get-Random)"
+        $tempGoDir = Join-Path $tempDir "go"
+        
+        try {
+            New-Item -ItemType Directory -Path $tempGoDir -Force | Out-Null
+            
+            # Copy contents to temp 'go' directory
+            robocopy $platformOutputDir $tempGoDir /E /R:1 /W:1 /NFL /NDL /NP | Out-Null
+            
+            # Create zip from temp directory
+            Compress-Archive -Path $tempGoDir -DestinationPath $zipPath -Force
+            
+            if (-not (Test-Path $zipPath)) { throw "Failed to create zip file: $zipPath" }
+            $zipSize = (Get-Item $zipPath).Length / 1MB
+            Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSize, 2)) MB)"
+            Write-Host "Location: $zipPath"
+        } finally {
+            # Clean up temp directory
+            if (Test-Path $tempDir) {
+                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 
