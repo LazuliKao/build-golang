@@ -54,8 +54,8 @@ jobs:
 
       - name: List downloaded artifacts
         run: |
-          ls artifacts
-          ls artifacts -Recurse -Filter "go*.zip"
+          ls -lah artifacts
+          find artifacts -name "go*.zip" -o -name "go*.tar.gz"
 
       - name: Derive Go version from artifact
         id: version
