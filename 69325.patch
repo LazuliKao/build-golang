@@ -1,0 +1,240 @@
+diff --git a/src/runtime/cgo/callbacks_musl_linux.go b/src/runtime/cgo/callbacks_musl_linux.go
+new file mode 100644
+index 0000000000..305941817b
+--- /dev/null
++++ b/src/runtime/cgo/callbacks_musl_linux.go
+@@ -0,0 +1,17 @@
++// Copyright 2024 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build linux
++
++package cgo
++
++import _ "unsafe" // for go:linkname
++
++// x_cgo_is_musl returns 1 if the C library is musl.
++
++//go:cgo_import_static x_cgo_is_musl
++//go:linkname x_cgo_is_musl x_cgo_is_musl
++//go:linkname _cgo_is_musl _cgo_is_musl
++var x_cgo_is_musl byte
++var _cgo_is_musl = &x_cgo_is_musl
+diff --git a/src/runtime/cgo/gcc_musl_linux.c b/src/runtime/cgo/gcc_musl_linux.c
+new file mode 100644
+index 0000000000..82998f0afb
+--- /dev/null
++++ b/src/runtime/cgo/gcc_musl_linux.c
+@@ -0,0 +1,14 @@
++// Copyright 2024 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build linux
++
++// x_cgo_is_musl reports whether the C library is musl.
++int x_cgo_is_musl() {
++	#if defined(__GLIBC__) || defined(__UCLIBC__)
++		return 0;
++	#else
++		return 1;
++	#endif
++}
+diff --git a/src/runtime/cgo_musl_linux.go b/src/runtime/cgo_musl_linux.go
+new file mode 100644
+index 0000000000..470dfd6417
+--- /dev/null
++++ b/src/runtime/cgo_musl_linux.go
+@@ -0,0 +1,12 @@
++// Copyright 2024 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build linux
++
++package runtime
++
++import "unsafe"
++
++//go:linkname _cgo_is_musl _cgo_is_musl
++var _cgo_is_musl unsafe.Pointer
+diff --git a/src/runtime/os_linux.go b/src/runtime/os_linux.go
+index fd560ddf5a..bd0d91d14f 100644
+--- a/src/runtime/os_linux.go
++++ b/src/runtime/os_linux.go
+@@ -240,21 +240,25 @@ var auxvreadbuf [128]uintptr
+ func sysargs(argc int32, argv **byte) {
+ 	n := argc + 1
+ 
+-	// skip over argv, envp to get to auxv
+-	for argv_index(argv, n) != nil {
+-		n++
+-	}
++	// auxv on argv is not available on musl library/archive.
++	if !libmusl {
++		// skip over argv, envp to get to auxv
++		for argv_index(argv, n) != nil {
++			n++
++		}
+ 
+-	// skip NULL separator
+-	n++
++		// skip NULL separator
++		n++
+ 
+-	// now argv+n is auxv
+-	auxvp := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*goarch.PtrSize))
++		// now argv+n is auxv
++		auxvp := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*goarch.PtrSize))
+ 
+-	if pairs := sysauxv(auxvp[:]); pairs != 0 {
+-		auxv = auxvp[: pairs*2 : pairs*2]
+-		return
++		if pairs := sysauxv(auxvp[:]); pairs != 0 {
++			auxv = auxvp[: pairs*2 : pairs*2]
++			return
++		}
+ 	}
++
+ 	// In some situations we don't get a loader-provided
+ 	// auxv, such as when loaded as a library on Android.
+ 	// Fall back to /proc/self/auxv.
+@@ -372,6 +376,11 @@ func readRandom(r []byte) int {
+ }
+ 
+ func goenvs() {
++	if libmusl {
++		// Read envs from /proc/self/environ instead
++		envs = readNullTerminatedStringsFromFile(procEnviron)
++		return
++	}
+ 	goenvs_unix()
+ }
+ 
+@@ -382,6 +391,7 @@ func goenvs() {
+ //go:nosplit
+ //go:nowritebarrierrec
+ func libpreinit() {
++	libmusl = asmcgocall(_cgo_is_musl, nil) == 1
+ 	initsig(true)
+ }
+ 
+diff --git a/src/runtime/proc.go b/src/runtime/proc.go
+index d898c9668b..ef975d903f 100644
+--- a/src/runtime/proc.go
++++ b/src/runtime/proc.go
+@@ -799,6 +799,19 @@ func getGodebugEarly() (string, bool) {
+ 		// Similar to goenv_unix but extracts the environment value for
+ 		// GODEBUG directly.
+ 		// TODO(moehrmann): remove when general goenvs() can be called before cpuinit()
++		// If the binary is an archive or a library, the operating system is Linux,
++		// and the system uses Musl, then read the environment variables from the
++		// /proc/self/environ file. Iterate over each null-terminated string read
++		// from the file. If any string has the specified prefix, return that string.
++		if libmusl {
++			return env, false
++			for _, value := range readNullTerminatedStringsFromFile(procEnviron) {
++				if stringslite.HasPrefix(value, prefix) {
++					return value, true
++				}
++			}
++		}
++
+ 		n := int32(0)
+ 		for argv_index(argv, argc+1+n) != nil {
+ 			n++
+diff --git a/src/runtime/runtime1.go b/src/runtime/runtime1.go
+index 15b546783b..753f6d020f 100644
+--- a/src/runtime/runtime1.go
++++ b/src/runtime/runtime1.go
+@@ -26,6 +26,9 @@ const (
+ var traceback_cache uint32 = 2 << tracebackShift
+ var traceback_env uint32
+ 
++var procCmdline = []byte("/proc/self/cmdline\x00")
++var procEnviron = []byte("/proc/self/environ\x00")
++
+ // gotraceback returns the current traceback settings.
+ //
+ // If level is 0, suppress all tracebacks.
+@@ -74,6 +77,13 @@ func goargs() {
+ 	if GOOS == "windows" {
+ 		return
+ 	}
++
++	// musl-linux library: Read argv from /proc/self/cmdline instead
++	if libmusl {
++		argslice = readNullTerminatedStringsFromFile(procCmdline)
++		return
++	}
++
+ 	argslice = make([]string, argc)
+ 	for i := int32(0); i < argc; i++ {
+ 		argslice[i] = gostringnocopy(argv_index(argv, i))
+@@ -95,6 +105,51 @@ func goenvs_unix() {
+ 	}
+ }
+ 
++// readNullTerminatedStringsFromFile reads a file specified by the given path
++// and returns a slice of strings. Each string in the slice is null-terminated
++// in the file.
++//
++// Parameters:
++// - path: A null-terminated byte slice representing the file path.
++//
++// Returns:
++// - A slice of strings read from the file, where each string is null-terminated.
++//
++// It opens the file, reads its contents in chunks,
++// and parses the data into a slice of strings based on null-termination.
++//
++// Note: This function will return nil if the file cannot be opened.
++func readNullTerminatedStringsFromFile(path []byte) []string {
++	fd := open(&path[0], 0, 0)
++	if fd <= 0 {
++		return nil
++	}
++
++	// Read the file.
++	var data []byte
++	var buf [1024]byte
++	for {
++		n := read(fd, noescape(unsafe.Pointer(&buf[0])), int32(unsafe.Sizeof(buf)))
++		if n <= 0 { // EOF
++			break
++		}
++		data = append(data, buf[:n]...)
++	}
++
++	// Parse the data into a slice of strings.
++	var start int
++	var result = make([]string, 0, 8)
++	for i := 0; i < len(data); i++ {
++		if data[i] == 0 { // null-termination
++			result = append(result, gostring(&data[start:i][0]))
++			start = i + 1
++		}
++	}
++
++	closefd(fd)
++	return result
++}
++
+ func environ() []string {
+ 	return envs
+ }
+diff --git a/src/runtime/runtime2.go b/src/runtime/runtime2.go
+index 527611f96a..8395ea8faa 100644
+--- a/src/runtime/runtime2.go
++++ b/src/runtime/runtime2.go
+@@ -1310,6 +1310,9 @@ var (
+ 	isarchive bool // -buildmode=c-archive
+ )
+ 
++// libmusl is set if the Go archive/library is linked against linux musl libc.
++var libmusl bool  // set by os_linux libpreinit
++
+ // Must agree with internal/buildcfg.FramePointerEnabled.
+ const framepointer_enabled = GOARCH == "amd64" || GOARCH == "arm64"
+ 

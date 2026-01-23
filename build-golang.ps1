@@ -642,7 +642,9 @@ try {
     Get-BootstrapGo
     Get-GoSource -Version $GoVersion
     # Apply-PRPatch -PRNumber 75048
-    Apply-LocalPatch -PatchFile "b5154bd2ca19f98c7580e41eb4fc00113c79be1a.patch"
+    # Apply-PRPatch -PRNumber 69325
+    # Apply-LocalPatch -PatchFile "b5154bd2ca19f98c7580e41eb4fc00113c79be1a.patch"
+    Apply-LocalPatch -PatchFile "69325.patch"
     
     # Build and package for each platform
     foreach ($platform in $Platforms) {
