@@ -562,9 +562,34 @@ function Package-Go {
                 # Move tar to final location
                 Move-Item $tarFileName $tarPath -Force
                 if (-not (Test-Path $tarPath)) { throw "Failed to create tar.gz file: $tarPath" }
-            } finally {
-                Pop-Location
-            }
+                
+                # Try to fix executable bits inside tar.gz using Python helper
+                $pythonCmd = $null
+                foreach ($p in @("python","python3","py")) {
+                    try { Get-Command $p -ErrorAction Stop | Out-Null; $pythonCmd = $p; break } catch {}
+                }
+                if ($pythonCmd) {
+                    Write-Host "Fixing executable bits inside tar using $pythonCmd..."
+                    $fixer = Join-Path $PSScriptRoot "scripts\fix_tar_execs.py"
+                    if (-not (Test-Path $fixer)) {
+                        Write-Host "Warning: fixer script not found: $fixer" -ForegroundColor Yellow
+                    } else {
+                        & $pythonCmd $fixer $tarPath
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Host "Warning: Python fixer failed (exit code $LASTEXITCODE). Tar may lack +x on executables." -ForegroundColor Yellow
+                        } else {
+                            Write-Success "Executable bits fixed inside tar.gz"
+                        }
+                    }
+                } else {
+                    Write-Host "Python not found. Recreating tar with --chmod=ugo+rx (may set too many files executable)..." -ForegroundColor Yellow
+                    # Recreate tar forcing execute bits (best-effort fallback)
+                    tar --format=gnu --chmod=ugo+rx -czf $tarFileName go
+                    Move-Item $tarFileName $tarPath -Force
+                }
+             } finally {
+                 Pop-Location
+             }
             
             $tarSize = (Get-Item $tarPath).Length / 1MB
             Write-Success "Go packaged successfully: $tarFileName (Size: $([math]::Round($tarSize, 2)) MB)"
