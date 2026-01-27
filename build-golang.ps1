@@ -553,43 +553,34 @@ function Package-Go {
             # Copy contents to temp 'go' directory
             robocopy $platformOutputDir $tempGoDir /E /R:1 /W:1 /NFL /NDL /NP | Out-Null
             
-            # Create tar.gz from temp directory
-            # Use relative path for tar output to avoid Windows path issues
-            $tarFileName = Split-Path $tarPath -Leaf
-            Push-Location $tempDir
-            try {
-                tar -czf $tarFileName go
-                # Move tar to final location
-                Move-Item $tarFileName $tarPath -Force
-                if (-not (Test-Path $tarPath)) { throw "Failed to create tar.gz file: $tarPath" }
-                
-                # Try to fix executable bits inside tar.gz using Python helper
-                $pythonCmd = $null
-                foreach ($p in @("python","python3","py")) {
-                    try { Get-Command $p -ErrorAction Stop | Out-Null; $pythonCmd = $p; break } catch {}
-                }
-                if ($pythonCmd) {
-                    Write-Host "Fixing executable bits inside tar using $pythonCmd..."
-                    $fixer = Join-Path $PSScriptRoot "scripts\fix_tar_execs.py"
-                    if (-not (Test-Path $fixer)) {
-                        Write-Host "Warning: fixer script not found: $fixer" -ForegroundColor Yellow
-                    } else {
-                        & $pythonCmd $fixer $tarPath
-                        if ($LASTEXITCODE -ne 0) {
-                            Write-Host "Warning: Python fixer failed (exit code $LASTEXITCODE). Tar may lack +x on executables." -ForegroundColor Yellow
-                        } else {
-                            Write-Success "Executable bits fixed inside tar.gz"
-                        }
-                    }
-                } else {
-                    Write-Host "Python not found. Recreating tar with --chmod=ugo+rx (may set too many files executable)..." -ForegroundColor Yellow
-                    # Recreate tar forcing execute bits (best-effort fallback)
-                    tar --format=gnu --chmod=ugo+rx -czf $tarFileName go
-                    Move-Item $tarFileName $tarPath -Force
-                }
-             } finally {
-                 Pop-Location
-             }
+            $pythonCmd = $null
+            foreach ($p in @("python","python3","py")) {
+                try { 
+                    $null = Get-Command $p -ErrorAction Stop
+                    $pythonCmd = $p
+                    break 
+                } catch {}
+            }
+            
+            if (-not $pythonCmd) {
+                throw "Python not found. Python is required to create tar.gz with proper permissions."
+            }
+            
+            $createTarScript = Join-Path $PSScriptRoot "scripts\create_tar.py"
+            if (-not (Test-Path $createTarScript)) {
+                throw "create_tar.py script not found: $createTarScript"
+            }
+            
+            Write-Host "Creating tar.gz with Python..."
+            & $pythonCmd $createTarScript $tempGoDir $tarPath
+            
+            if ($LASTEXITCODE -ne 0) {
+                throw "Python tar creation failed with exit code $LASTEXITCODE"
+            }
+            
+            if (-not (Test-Path $tarPath)) {
+                throw "tar.gz file was not created: $tarPath"
+            }
             
             $tarSize = (Get-Item $tarPath).Length / 1MB
             Write-Success "Go packaged successfully: $tarFileName (Size: $([math]::Round($tarSize, 2)) MB)"
@@ -617,10 +608,39 @@ function Package-Go {
             # Create zip from temp directory
             Compress-Archive -Path $tempGoDir -DestinationPath $zipPath -Force
             
-            if (-not (Test-Path $zipPath)) { throw "Failed to create zip file: $zipPath" }
-            $zipSize = (Get-Item $zipPath).Length / 1MB
-            Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSize, 2)) MB)"
+            # Verify zip was created successfully
+            if (-not (Test-Path $zipPath)) { 
+                throw "Failed to create zip file: $zipPath" 
+            }
+            
+            $zipFileInfo = Get-Item $zipPath
+            if ($zipFileInfo.Length -eq 0) {
+                throw "zip file is empty (0 bytes)"
+            }
+            
+            # Minimum expected size: 50MB
+            $minSizeMB = 50
+            $zipSizeMB = $zipFileInfo.Length / 1MB
+            if ($zipSizeMB -lt $minSizeMB) {
+                throw "zip file is too small ($([math]::Round($zipSizeMB, 2)) MB). Expected at least $minSizeMB MB"
+            }
+            
+            Write-Success "Go packaged successfully: $zipFileName (Size: $([math]::Round($zipSizeMB, 2)) MB)"
             Write-Host "Location: $zipPath"
+            
+        } catch {
+            Write-Host "Error during packaging: $($_.Exception.Message)" -ForegroundColor Red
+            
+            # Clean up failed zip file
+            if (Test-Path $zipPath) {
+                $failedSize = (Get-Item $zipPath).Length
+                if ($failedSize -eq 0) {
+                    Write-Host "Removing corrupted 0-byte zip file" -ForegroundColor Yellow
+                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            
+            throw
         } finally {
             # Clean up temp directory
             if (Test-Path $tempDir) {
