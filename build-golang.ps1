@@ -397,18 +397,31 @@ function Build-Go {
             } else {
                 throw "make.bat not found in $srcPath"
             }
-        } else {
-            # For Linux and other Unix-like systems, use make.bash if running in WSL or similar
-            # Since we're on Windows, we'll use the Windows batch file approach
-            # The batch file should handle cross-compilation via GOOS/GOARCH
-            if (Test-Path ".\make.bat") {
-                Write-Host "Running make.bat for cross-compilation to $OS..."
-                cmd /c "make.bat"
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Build failed with exit code $LASTEXITCODE"
+        } elseif ($OS -eq "linux" -or $OS -eq "darwin") {
+            # For Linux and Darwin (macOS)
+            if ($IsWindows -or $PSVersionTable.Platform -eq "Win32NT") {
+                # Cross-compiling from Windows - use make.bat with GOOS/GOARCH
+                # make.bat will use gcc/mingw to cross-compile
+                if (Test-Path ".\make.bat") {
+                    Write-Host "Running make.bat for cross-compilation to $OS (from Windows)..."
+                    cmd /c "make.bat"
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Build failed with exit code $LASTEXITCODE"
+                    }
+                } else {
+                    throw "make.bat not found in $srcPath"
                 }
             } else {
-                throw "make.bat not found in $srcPath"
+                # Running natively on Unix (macOS/Linux)
+                if (Test-Path ".\make.bash") {
+                    Write-Host "Running make.bash for $OS (native build)..."
+                    bash make.bash
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Build failed with exit code $LASTEXITCODE"
+                    }
+                } else {
+                    throw "make.bash not found in $srcPath"
+                }
             }
         }
     } finally {
@@ -446,9 +459,9 @@ function Copy-GoOutput {
         throw "Robocopy failed with exit code $LASTEXITCODE"
     }
     
-    # Post-process for Linux builds
-    if ($OS -eq "linux") {
-        Write-Step "Post-processing Linux build..."
+    # Post-process for non-Windows builds
+    if ($OS -eq "linux" -or $OS -eq "darwin") {
+        Write-Step "Post-processing $OS build..."
         
         $binDir = Join-Path $platformOutputDir "bin"
         $platformBinDir = Join-Path $binDir "${OS}_${Arch}"
@@ -460,10 +473,10 @@ function Copy-GoOutput {
             Remove-Item $exe.FullName -Force
         }
         
-        # Move Linux binaries from bin/linux_amd64/ to bin/
+        # Move platform-specific binaries from bin/os_arch/ to bin/
         if (Test-Path $platformBinDir) {
-            $linuxBinaries = Get-ChildItem -Path $platformBinDir -File
-            foreach ($binary in $linuxBinaries) {
+            $binaries = Get-ChildItem -Path $platformBinDir -File
+            foreach ($binary in $binaries) {
                 $destPath = Join-Path $binDir $binary.Name
                 Write-Host "Moving $($binary.Name) to bin/"
                 Move-Item $binary.FullName $destPath -Force
@@ -471,15 +484,15 @@ function Copy-GoOutput {
             
             # Remove the now-empty platform subdirectory
             Remove-Item $platformBinDir -Force
-            Write-Success "Linux binaries moved to bin/ and platform subdirectory removed"
+            Write-Success "$OS binaries moved to bin/ and platform subdirectory removed"
         }
 
-        # Remove Windows toolchain binaries from linux package
+        # Remove Windows toolchain binaries from package
         $windowsToolDir = Join-Path $platformOutputDir "pkg/tool/windows_amd64"
         if (Test-Path $windowsToolDir) {
-            Write-Host "Removing Windows toolchain from linux package: $windowsToolDir"
+            Write-Host "Removing Windows toolchain from $OS package: $windowsToolDir"
             Remove-Item $windowsToolDir -Recurse -Force
-            Write-Success "Removed pkg/tool/windows_amd64 from linux package"
+            Write-Success "Removed pkg/tool/windows_amd64 from $OS package"
         }
     }
     
@@ -703,6 +716,11 @@ try {
             $outputPath = Copy-GoOutput -OS "linux" -Arch $arch -SourceDirectory $SourceDir -DestinationDirectory $OutputDir
             Test-GoBuild -OS "linux" -Arch $arch -OutputDirectory $OutputDir
             Package-Go -Version $GoVersion -OS "linux" -Architecture $arch -OutputDirectory $OutputDir
+        } elseif ($platform -eq "darwin") {
+            Build-Go -OS "darwin" -Arch $arch -SourceDirectory $SourceDir
+            $outputPath = Copy-GoOutput -OS "darwin" -Arch $arch -SourceDirectory $SourceDir -DestinationDirectory $OutputDir
+            Test-GoBuild -OS "darwin" -Arch $arch -OutputDirectory $OutputDir
+            Package-Go -Version $GoVersion -OS "darwin" -Architecture $arch -OutputDirectory $OutputDir
         }
     }
     
