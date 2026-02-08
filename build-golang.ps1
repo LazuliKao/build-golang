@@ -3,11 +3,20 @@
 
 param(
     [string]$GoVersion = "",
-    [string]$SourceDir = "golang_src",
-    [string]$BootstrapDir = "go-bootstrap",
-    [string]$OutputDir = "go-build",
-    [string[]]$Platforms = @("windows", "linux")
+    [string]$Platforms = "windows",
+    [string]$BootstrapOS = ""  # Allow override of bootstrap OS
 )
+
+# If BootstrapOS not specified, detect current platform
+if (-not $BootstrapOS) {
+    if ($IsMacOS) {
+        $BootstrapOS = "darwin"
+    } elseif ($IsLinux) {
+        $BootstrapOS = "linux"
+    } else {
+        $BootstrapOS = "windows"
+    }
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -205,7 +214,7 @@ function Get-BootstrapGo {
 
     # Detect architecture
     $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-    $os = "windows"
+    $os = $BootstrapOS
     
     # Get latest stable version
     $latestVersion = Get-LatestStableVersion
@@ -686,6 +695,7 @@ try {
     Write-Host "Configuration:"
     Write-Host "  Go Version: $GoVersion"
     Write-Host "  Architecture: $arch"
+    Write-Host "  Bootstrap OS: $BootstrapOS"
     Write-Host "  Source Dir: $SourceDir"
     Write-Host "  Bootstrap Dir: $BootstrapDir"
     Write-Host "  Platforms: $($Platforms -join ', ')"
