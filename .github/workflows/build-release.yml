@@ -27,7 +27,7 @@ jobs:
 
       - name: Build Go (${{ matrix.platform }})
         run: |
-          ./build-golang.ps1 -GoVersion '${{ inputs.go_version }}' -Platforms '${{ matrix.platform }}' -BootstrapOS 'windows'
+          ./build-golang.ps1 -GoVersion '${{ inputs.go_version }}' -Platforms '${{ matrix.platform }}'
           # build-golang.ps1 may leave a non-zero LASTEXITCODE (e.g., non-fatal git apply). Normalize to success if no terminating errors occurred.
           if ($LASTEXITCODE -ne 0) { Write-Host "Normalizing LASTEXITCODE from $LASTEXITCODE to 0"; $global:LASTEXITCODE = 0 }
 
@@ -56,7 +56,7 @@ jobs:
 
       - name: Build Go (darwin)
         run: |
-          pwsh ./build-golang.ps1 -GoVersion '${{ inputs.go_version }}' -Platforms 'darwin' -BootstrapOS 'darwin'
+          pwsh ./build-golang.ps1 -GoVersion '${{ inputs.go_version }}' -Platforms 'darwin'
           # build-golang.ps1 may leave a non-zero LASTEXITCODE (e.g., non-fatal git apply). Normalize to success if no terminating errors occurred.
           if ($LASTEXITCODE -ne 0) { Write-Host "Normalizing LASTEXITCODE from $LASTEXITCODE to 0"; $global:LASTEXITCODE = 0 }
 
